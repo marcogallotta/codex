@@ -293,6 +293,7 @@ impl LocalAgentControl {
         } else {
             (None, None)
         };
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let result = self
             .handle_thread_request_result(
                 agent_id,
@@ -303,6 +304,7 @@ impl LocalAgentControl {
                         Op::InterAgentCommunication {
                             communication,
                             start_options,
+                            reply: Some(reply_tx),
                         },
                         parent_turn_id,
                         root_turn_id,
@@ -310,6 +312,14 @@ impl LocalAgentControl {
                     .await,
             )
             .await;
+        let result = match result {
+            Ok(submission_id) => match reply_rx.await {
+                Ok(Ok(())) => Ok(submission_id),
+                Ok(Err(err)) => Err(err),
+                Err(_) => Err(CodexErr::InternalAgentDied),
+            },
+            Err(err) => Err(err),
+        };
         if let (Some(communication), Ok(communication_id)) =
             (communication_for_log, result.as_ref())
         {

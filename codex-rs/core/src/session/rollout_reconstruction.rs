@@ -2,8 +2,11 @@ use super::*;
 use crate::context::world_state::WorldStateSnapshot;
 use crate::context_manager::is_user_turn_boundary;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::ResponseItemId;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::ThreadHistoryMode;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 // Return value of `Session::reconstruct_history_from_rollout`, bundling the rebuilt history with
@@ -21,6 +24,57 @@ pub(super) struct RolloutReconstruction {
     pub(super) first_window_id: Option<Uuid>,
     pub(super) previous_window_id: Option<Uuid>,
     pub(super) window_id: Option<Uuid>,
+    pub(super) accepted_inter_agent_communication_ids: HashSet<ResponseItemId>,
+    pub(super) pending_inter_agent_communications: Vec<InterAgentCommunication>,
+}
+
+fn reconstruct_durable_inter_agent_deliveries(
+    rollout_items: &[RolloutItem],
+) -> (HashSet<ResponseItemId>, Vec<InterAgentCommunication>) {
+    let mut receipts: Vec<Option<InterAgentCommunication>> = Vec::new();
+    let mut receipt_positions = HashMap::<ResponseItemId, usize>::new();
+    let mut presented = HashSet::new();
+    for item in rollout_items {
+        match item {
+            RolloutItem::InterAgentCommunication(communication) => {
+                let Some(id) = communication.id.as_ref() else {
+                    continue;
+                };
+                if !id.as_str().starts_with("subagent_completion_") {
+                    continue;
+                }
+                let mut canonical = communication.clone();
+                canonical.trigger_turn = true;
+                if let Some(position) = receipt_positions.get(id).copied() {
+                    if receipts[position].as_ref() != Some(&canonical) {
+                        // Conflicting durable receipts are unsafe to present automatically.
+                        receipts[position] = None;
+                    }
+                } else {
+                    receipt_positions.insert(id.clone(), receipts.len());
+                    receipts.push(Some(canonical));
+                }
+                if !communication.trigger_turn {
+                    presented.insert(id.clone());
+                }
+            }
+            RolloutItem::ResponseItem(item) => {
+                if let Some(id) = item.id()
+                    && id.as_str().starts_with("subagent_completion_")
+                {
+                    presented.insert(id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    let accepted = receipt_positions.keys().cloned().collect();
+    let pending = receipts
+        .into_iter()
+        .flatten()
+        .filter(|communication| !presented.contains(communication.id.as_ref().unwrap()))
+        .collect();
+    (accepted, pending)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -347,11 +401,17 @@ impl Session {
                     active_segment.counts_as_user_turn |=
                         is_user_turn_boundary(&response_item.item);
                 }
-                RolloutItem::InterAgentCommunication(_) => {
+                RolloutItem::InterAgentCommunication(communication)
+                    if communication
+                        .id
+                        .as_ref()
+                        .is_none_or(|id| !id.as_str().starts_with("subagent_completion_")) =>
+                {
                     let active_segment =
                         active_segment.get_or_insert_with(ActiveReplaySegment::default);
                     active_segment.counts_as_user_turn = true;
                 }
+                RolloutItem::InterAgentCommunication(_) => {}
                 RolloutItem::EventMsg(_)
                 | RolloutItem::SessionMeta(_)
                 | RolloutItem::RealtimeItem(_)
@@ -423,13 +483,16 @@ impl Session {
                         turn_context.model_info().truncation_policy.into(),
                     );
                 }
-                RolloutItem::InterAgentCommunication(communication) => {
+                RolloutItem::InterAgentCommunication(communication)
+                    if communication.id.is_none() =>
+                {
                     let response_item = communication.to_model_input_item();
                     history.record_items(
                         std::iter::once(&response_item),
                         turn_context.model_info().truncation_policy.into(),
                     );
                 }
+                RolloutItem::InterAgentCommunication(_) => {}
                 RolloutItem::InterAgentCommunicationMetadata { .. } => {}
                 RolloutItem::Compacted(compacted) => {
                     // Reverse replay already chose the newest surviving compaction. Any newer
@@ -520,6 +583,8 @@ impl Session {
             previous_id: None,
             id: None,
         });
+        let (accepted_inter_agent_communication_ids, pending_inter_agent_communications) =
+            reconstruct_durable_inter_agent_deliveries(rollout_items);
         RolloutReconstruction {
             retained_context: history.retained_context().clone(),
             guardian_history: history.guardian_history_checkpoint(),
@@ -532,6 +597,8 @@ impl Session {
             first_window_id: window.first_id,
             previous_window_id: window.previous_id,
             window_id: window.id,
+            accepted_inter_agent_communication_ids,
+            pending_inter_agent_communications,
         }
     }
 }

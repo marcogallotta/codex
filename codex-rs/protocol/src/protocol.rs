@@ -665,6 +665,7 @@ pub enum Op {
     InterAgentCommunication {
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
+        reply: Option<oneshot::Sender<CodexResult<()>>>,
     },
 
     /// Approve a command execution

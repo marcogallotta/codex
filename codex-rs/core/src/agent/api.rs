@@ -125,8 +125,8 @@ pub trait AgentControl: Send + Sync {
     fn record_usage(&self, usage: TokenUsage) -> BoxFuture<'_, Result<()>>;
 
     /// Report the terminal result to the parent and completion activity to the task
-    /// initiator. Local delivery remains best effort and uses the reporting runtime's
-    /// diagnostic trace; it is not deduplicated.
+    /// initiator. Local completion delivery is durably deduplicated by terminal turn;
+    /// diagnostic tracing remains best effort.
     fn turn_finished<'a>(
         &'a self,
         outcome: AgentTurnOutcome,

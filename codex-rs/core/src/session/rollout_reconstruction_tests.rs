@@ -324,6 +324,78 @@ async fn record_initial_history_reconstructs_typed_inter_agent_message() {
 }
 
 #[tokio::test]
+async fn durable_inter_agent_receipt_requeues_until_presented() {
+    let (session, turn_context) = make_session_and_context().await;
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ true,
+    );
+    communication.id = Some(codex_protocol::ResponseItemId::with_suffix(
+        "subagent_completion",
+        "turn-1",
+    ));
+    let receipt = RolloutItem::InterAgentCommunication(communication.clone());
+
+    let pending = session
+        .reconstruct_history_from_rollout(&turn_context, std::slice::from_ref(&receipt))
+        .await;
+    assert!(pending.history.is_empty());
+    assert_eq!(
+        pending.pending_inter_agent_communications,
+        vec![communication.clone()]
+    );
+
+    let presented_item = ResponseItemEnvelope::new(communication.to_model_input_item());
+    let mut presentation = communication.clone();
+    presentation.trigger_turn = false;
+    let presented = session
+        .reconstruct_history_from_rollout(
+            &turn_context,
+            &[
+                receipt,
+                RolloutItem::ResponseItem(presented_item.clone()),
+                RolloutItem::InterAgentCommunication(presentation),
+            ],
+        )
+        .await;
+    assert!(presented.pending_inter_agent_communications.is_empty());
+    assert_eq!(presented.history, vec![presented_item]);
+}
+
+#[tokio::test]
+async fn conflicting_durable_inter_agent_receipts_fail_closed() {
+    let (session, turn_context) = make_session_and_context().await;
+    let id = codex_protocol::ResponseItemId::with_suffix("subagent_completion", "turn-1");
+    let communication = |content: &str| {
+        let mut communication = InterAgentCommunication::new(
+            AgentPath::root().join("worker").expect("worker path"),
+            AgentPath::root(),
+            Vec::new(),
+            content.to_string(),
+            /*trigger_turn*/ true,
+        );
+        communication.id = Some(id.clone());
+        RolloutItem::InterAgentCommunication(communication)
+    };
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(
+            &turn_context,
+            &[communication("first"), communication("conflict")],
+        )
+        .await;
+    assert!(reconstructed.pending_inter_agent_communications.is_empty());
+    assert!(
+        reconstructed
+            .accepted_inter_agent_communication_ids
+            .contains(&id)
+    );
+}
+
+#[tokio::test]
 async fn record_initial_history_ignores_security_risk_scores() {
     let (session, _turn_context) = make_session_and_context().await;
     let user_item = user_message("visible user input");

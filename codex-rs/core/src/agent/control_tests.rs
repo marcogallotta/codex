@@ -793,6 +793,7 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
         Op::InterAgentCommunication {
             communication: communication.clone(),
             start_options: Default::default(),
+            reply: None,
         },
     );
     let captured = harness
@@ -1111,6 +1112,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         Op::InterAgentCommunication {
             communication,
             start_options: Default::default(),
+            reply: None,
         },
     );
     let captured = harness
@@ -4380,6 +4382,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
                 /*trigger_turn*/ false,
             ),
             start_options: Default::default(),
+            reply: None,
         },
     );
 
