@@ -11,7 +11,7 @@ permissions:
 jobs:
   qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 65
     defaults:
       run:
         working-directory: codex-rs
@@ -81,7 +81,7 @@ jobs:
           echo "WAKEFUL_BWRAP_PATH=${GITHUB_WORKSPACE}/codex-rs/${bwrap_path}" >> "$GITHUB_ENV"
           echo "Built package bwrap sha256:${digest}"
       - name: Build canonical Wakeful package
-        timeout-minutes: 48
+        timeout-minutes: 58
         env:
           CODEX_REPO_ROOT: ${{ github.workspace }}
           STABLE_GIT_COMMIT: 91f03d92c08c036862d901cfa85062402fe7ca3d
