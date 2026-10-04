@@ -19,12 +19,15 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Verify qualification subject
         working-directory: .
         shell: bash
         run: |
-          test "$(git rev-parse HEAD^)" = "91f03d92c08c036862d901cfa85062402fe7ca3d"
+          candidate=91f03d92c08c036862d901cfa85062402fe7ca3d
+          git merge-base --is-ancestor "$candidate" HEAD
+          test -z "$(git diff --name-only "$candidate" HEAD -- . \
+            ':(exclude).github/workflows/wakeful-linux-qualification.yml')"
       - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - name: Install Linux build dependencies
