@@ -91,7 +91,7 @@ async fn keeps_completion_delivery_state_older_than_compaction() {
         AgentPath::root(),
         Vec::new(),
         "finished".to_string(),
-        true,
+        /*trigger_turn*/ true,
     );
     receipt.id = Some(ResponseItemId::with_suffix("subagent_completion", "turn-1"));
     let presented_item = RolloutItem::ResponseItem(receipt.to_model_input_item().into());
