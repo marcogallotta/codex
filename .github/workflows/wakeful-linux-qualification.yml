@@ -1,0 +1,54 @@
+name: Wakeful Linux qualification
+
+on:
+  push:
+    branches:
+      - qualification/wakeful-91f-linux
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Verify qualification subject
+        working-directory: .
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD^)" = "91f03d92c08c036862d901cfa85062402fe7ca3d"
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+      - name: Test affected crates
+        env:
+          RUST_MIN_STACK: "8388608"
+        run: cargo nextest run --no-fail-fast -p codex-core -p codex-thread-store -p codex-protocol
+      - name: Build candidate binary
+        run: cargo build -p codex-cli --bin codex
+      - name: Record candidate binary digest
+        run: sha256sum "$CARGO_TARGET_DIR/debug/codex" | tee "$RUNNER_TEMP/codex.sha256"
+      - name: Upload candidate binary
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: wakeful-codex-linux-91f03d92
+          path: |
+            ${{ env.CARGO_TARGET_DIR }}/debug/codex
+            ${{ runner.temp }}/codex.sha256
+          if-no-files-found: error
+          retention-days: 3
