@@ -11,7 +11,7 @@ permissions:
 jobs:
   qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: codex-rs
@@ -28,27 +28,117 @@ jobs:
           git merge-base --is-ancestor "$candidate" HEAD
           test -z "$(git diff --name-only "$candidate" HEAD -- . \
             ':(exclude).github/workflows/wakeful-linux-qualification.yml')"
-      - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-      - name: Install Linux build dependencies
-        shell: bash
-        run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
-      - name: Test exact Wakeful causal cases
-        env:
-          RUST_MIN_STACK: "8388608"
-        timeout-minutes: 18
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install Linux package dependencies
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked -p codex-core --lib \
-            session::input_queue::tests::input_queue_deduplicates_durable_mail_ids -- --exact
-          cargo test --locked -p codex-core --lib \
-            session::rollout_reconstruction_tests::durable_inter_agent_receipt_requeues_until_presented -- --exact
-          cargo test --locked -p codex-core --lib \
-            session::rollout_reconstruction_tests::conflicting_durable_inter_agent_receipts_fail_closed -- --exact
-          cargo test --locked -p codex-core --lib \
-            agent::control::tests::multi_agent_v2_completion_queues_message_for_direct_parent -- --exact
-          cargo test --locked -p codex-thread-store --lib \
-            local::model_context::tests::keeps_completion_delivery_state_older_than_compaction -- --exact
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils \
+            pkg-config \
+            libcap-dev
+      - name: Use hermetic Cargo home
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_home="${GITHUB_WORKSPACE}/.cargo-home"
+          mkdir -p "${cargo_home}/bin"
+          echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
+          echo "${cargo_home}/bin" >> "$GITHUB_PATH"
+          : > "${cargo_home}/config.toml"
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Install musl build tools
+        env:
+          TARGET: x86_64-unknown-linux-musl
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+      - name: Disable aws-lc jitter entropy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl=1" >> "$GITHUB_ENV"
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-musl
+      - name: Build bwrap and export digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=x86_64-unknown-linux-musl
+          cargo build --locked --target "$target" --release --bin bwrap
+          bwrap_path="target/${target}/release/bwrap"
+          strip --strip-debug --strip-unneeded "$bwrap_path"
+          digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
+          echo "WAKEFUL_BWRAP_PATH=${GITHUB_WORKSPACE}/codex-rs/${bwrap_path}" >> "$GITHUB_ENV"
+          echo "Built package bwrap sha256:${digest}"
+      - name: Build canonical Wakeful package
+        timeout-minutes: 48
+        env:
+          STABLE_GIT_COMMIT: 91f03d92c08c036862d901cfa85062402fe7ca3d
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="${RUNNER_TEMP}/wakeful-codex-91f03d92-x86_64-unknown-linux-musl"
+          archive="${RUNNER_TEMP}/wakeful-codex-91f03d92-x86_64-unknown-linux-musl.tar.gz"
+          python3 "${GITHUB_WORKSPACE}/scripts/build_codex_package.py" \
+            --target x86_64-unknown-linux-musl \
+            --cargo-profile release \
+            --package-version 0.0.0-wakeful.91f03d92 \
+            --package-dir "$package_dir" \
+            --archive-output "$archive" \
+            --bwrap-bin "$WAKEFUL_BWRAP_PATH"
+          echo "WAKEFUL_PACKAGE_DIR=${package_dir}" >> "$GITHUB_ENV"
+          echo "WAKEFUL_PACKAGE_ARCHIVE=${archive}" >> "$GITHUB_ENV"
+      - name: Verify canonical package and write manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$WAKEFUL_PACKAGE_DIR/codex-package.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          metadata = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          expected = {
+              "layoutVersion": 1,
+              "version": "0.0.0-wakeful.91f03d92",
+              "target": "x86_64-unknown-linux-musl",
+              "variant": "codex",
+              "entrypoint": "bin/codex",
+              "resourcesDir": "codex-resources",
+              "pathDir": "codex-path",
+          }
+          if metadata != expected:
+              raise SystemExit(f"package metadata mismatch: {metadata!r}")
+          PY
+          file "$WAKEFUL_PACKAGE_DIR/bin/codex"
+          "$WAKEFUL_PACKAGE_DIR/bin/codex" --version
+          tar -tzf "$WAKEFUL_PACKAGE_ARCHIVE"
+          (
+            cd "$WAKEFUL_PACKAGE_DIR"
+            find . -type f -print0 | sort -z | xargs -0 sha256sum
+          ) > "${RUNNER_TEMP}/wakeful-package-files.sha256"
+          sha256sum "$WAKEFUL_PACKAGE_ARCHIVE" \
+            > "${RUNNER_TEMP}/wakeful-package-archive.sha256"
+          cat "${RUNNER_TEMP}/wakeful-package-files.sha256"
+          cat "${RUNNER_TEMP}/wakeful-package-archive.sha256"
+      - name: Upload canonical package evidence
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: wakeful-codex-package-91f03d92
+          path: |
+            ${{ env.WAKEFUL_PACKAGE_DIR }}
+            ${{ env.WAKEFUL_PACKAGE_ARCHIVE }}
+            ${{ runner.temp }}/wakeful-package-files.sha256
+            ${{ runner.temp }}/wakeful-package-archive.sha256
+          if-no-files-found: error
+          retention-days: 3
