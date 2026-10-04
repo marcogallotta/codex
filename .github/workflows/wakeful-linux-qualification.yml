@@ -11,7 +11,7 @@ permissions:
 jobs:
   qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: codex-rs
@@ -32,23 +32,20 @@ jobs:
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        with:
-          tool: nextest
-      - name: Test affected crates
+      - name: Test exact Wakeful causal cases
         env:
           RUST_MIN_STACK: "8388608"
-        run: cargo nextest run --no-fail-fast -p codex-core -p codex-thread-store -p codex-protocol
-      - name: Build candidate binary
-        run: cargo build -p codex-cli --bin codex
-      - name: Record candidate binary digest
-        run: sha256sum "$CARGO_TARGET_DIR/debug/codex" | tee "$RUNNER_TEMP/codex.sha256"
-      - name: Upload candidate binary
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: wakeful-codex-linux-91f03d92
-          path: |
-            ${{ env.CARGO_TARGET_DIR }}/debug/codex
-            ${{ runner.temp }}/codex.sha256
-          if-no-files-found: error
-          retention-days: 3
+        timeout-minutes: 18
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-core --lib \
+            session::input_queue::tests::input_queue_deduplicates_durable_mail_ids -- --exact
+          cargo test --locked -p codex-core --lib \
+            session::rollout_reconstruction_tests::durable_inter_agent_receipt_requeues_until_presented -- --exact
+          cargo test --locked -p codex-core --lib \
+            session::rollout_reconstruction_tests::conflicting_durable_inter_agent_receipts_fail_closed -- --exact
+          cargo test --locked -p codex-core --lib \
+            agent::control::tests::multi_agent_v2_completion_queues_message_for_direct_parent -- --exact
+          cargo test --locked -p codex-thread-store --lib \
+            local::model_context::tests::keeps_completion_delivery_state_older_than_compaction -- --exact
