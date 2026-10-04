@@ -83,6 +83,7 @@ jobs:
       - name: Build canonical Wakeful package
         timeout-minutes: 48
         env:
+          CODEX_REPO_ROOT: ${{ github.workspace }}
           STABLE_GIT_COMMIT: 91f03d92c08c036862d901cfa85062402fe7ca3d
         shell: bash
         run: |
