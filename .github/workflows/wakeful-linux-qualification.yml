@@ -1,0 +1,53 @@
+name: Wakeful Linux qualification
+
+on:
+  push:
+    branches:
+      - qualification/wakeful-d0f-linux
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Verify qualification subject
+        working-directory: .
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD^)" = "d0f42af23913a04440e4b3b03b9fbc3c539a2bf4"
+          test -z "$(git diff --name-only HEAD^ HEAD -- . \
+            ':(exclude).github/workflows/wakeful-linux-qualification.yml')"
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - name: Test exact Wakeful causal cases
+        env:
+          RUST_MIN_STACK: "8388608"
+        timeout-minutes: 18
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p codex-core --lib \
+            session::input_queue::tests::input_queue_deduplicates_durable_mail_ids -- --exact
+          cargo test --locked -p codex-core --lib \
+            session::rollout_reconstruction_tests::durable_inter_agent_receipt_requeues_until_presented -- --exact
+          cargo test --locked -p codex-core --lib \
+            session::rollout_reconstruction_tests::conflicting_durable_inter_agent_receipts_fail_closed -- --exact
+          cargo test --locked -p codex-core --lib \
+            agent::control::tests::multi_agent_v2_completion_queues_message_for_direct_parent -- --exact
+          cargo test --locked -p codex-thread-store --lib \
+            local::model_context::tests::keeps_completion_delivery_state_older_than_compaction -- --exact
