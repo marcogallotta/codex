@@ -222,7 +222,7 @@ fn is_sparse_delivery_state(item: &RolloutItem) -> bool {
         RolloutItem::InterAgentCommunication(communication) => communication
             .id
             .as_ref()
-            .is_some_and(|id| id.as_str().starts_with("subagent_completion_")),
+            .is_some_and(|id| id.as_str().starts_with("amsg_subagent_completion_")),
         _ => false,
     }
 }

@@ -643,7 +643,10 @@ mod tests {
             "done",
             /*trigger_turn*/ true,
         );
-        mail.id = Some(ResponseItemId::with_suffix("subagent_completion", "turn-1"));
+        mail.id = Some(ResponseItemId::with_suffix(
+            "amsg_subagent_completion",
+            "turn-1",
+        ));
 
         assert!(
             input_queue

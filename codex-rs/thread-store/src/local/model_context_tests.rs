@@ -93,7 +93,10 @@ async fn keeps_completion_delivery_state_older_than_compaction() {
         "finished".to_string(),
         /*trigger_turn*/ true,
     );
-    receipt.id = Some(ResponseItemId::with_suffix("subagent_completion", "turn-1"));
+    receipt.id = Some(ResponseItemId::with_suffix(
+        "amsg_subagent_completion",
+        "turn-1",
+    ));
     let presented_item = RolloutItem::ResponseItem(receipt.to_model_input_item().into());
     let mut presentation = receipt.clone();
     presentation.trigger_turn = false;
@@ -131,7 +134,7 @@ async fn keeps_completion_delivery_state_older_than_compaction() {
     assert!(!context.items.iter().any(|item| matches!(
         item,
         RolloutItem::ResponseItem(item)
-            if item.id().is_some_and(|id| id.as_str().starts_with("subagent_completion_"))
+            if item.id().is_some_and(|id| id.as_str().starts_with("amsg_subagent_completion_"))
     )));
 }
 

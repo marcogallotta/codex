@@ -116,7 +116,7 @@ impl LocalAgentControl {
             /*trigger_turn*/ true,
         );
         communication.id = Some(ResponseItemId::with_suffix(
-            "subagent_completion",
+            "amsg_subagent_completion",
             outcome.turn_id.as_str(),
         ));
         let context =

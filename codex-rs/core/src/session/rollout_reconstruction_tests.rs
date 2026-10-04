@@ -334,7 +334,7 @@ async fn durable_inter_agent_receipt_requeues_until_presented() {
         /*trigger_turn*/ true,
     );
     communication.id = Some(codex_protocol::ResponseItemId::with_suffix(
-        "subagent_completion",
+        "amsg_subagent_completion",
         "turn-1",
     ));
     let receipt = RolloutItem::InterAgentCommunication(communication.clone());
@@ -368,7 +368,7 @@ async fn durable_inter_agent_receipt_requeues_until_presented() {
 #[tokio::test]
 async fn conflicting_durable_inter_agent_receipts_fail_closed() {
     let (session, turn_context) = make_session_and_context().await;
-    let id = codex_protocol::ResponseItemId::with_suffix("subagent_completion", "turn-1");
+    let id = codex_protocol::ResponseItemId::with_suffix("amsg_subagent_completion", "turn-1");
     let communication = |content: &str| {
         let mut communication = InterAgentCommunication::new(
             AgentPath::root().join("worker").expect("worker path"),

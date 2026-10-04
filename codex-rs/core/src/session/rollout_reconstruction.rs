@@ -40,7 +40,7 @@ fn reconstruct_durable_inter_agent_deliveries(
                 let Some(id) = communication.id.as_ref() else {
                     continue;
                 };
-                if !id.as_str().starts_with("subagent_completion_") {
+                if !id.as_str().starts_with("amsg_subagent_completion_") {
                     continue;
                 }
                 let mut canonical = communication.clone();
@@ -60,7 +60,7 @@ fn reconstruct_durable_inter_agent_deliveries(
             }
             RolloutItem::ResponseItem(item) => {
                 if let Some(id) = item.id()
-                    && id.as_str().starts_with("subagent_completion_")
+                    && id.as_str().starts_with("amsg_subagent_completion_")
                 {
                     presented.insert(id.clone());
                 }
@@ -405,7 +405,7 @@ impl Session {
                     if communication
                         .id
                         .as_ref()
-                        .is_none_or(|id| !id.as_str().starts_with("subagent_completion_")) =>
+                        .is_none_or(|id| !id.as_str().starts_with("amsg_subagent_completion_")) =>
                 {
                     let active_segment =
                         active_segment.get_or_insert_with(ActiveReplaySegment::default);
