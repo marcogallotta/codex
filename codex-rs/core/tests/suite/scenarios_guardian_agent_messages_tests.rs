@@ -95,6 +95,7 @@ async fn encrypted_parent_reply_survives_incremental_guardian_reviews() -> anyho
         .submit(Op::InterAgentCommunication {
             communication,
             start_options: Default::default(),
+            reply: None,
         })
         .await?;
     wait_for_event(&test.codex, |event| {

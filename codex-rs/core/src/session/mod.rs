@@ -962,6 +962,8 @@ impl Session {
             session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
         };
 
+        session.maybe_start_turn_for_pending_work().await;
+
         if let Some(startup) = startup {
             let _ = startup.io.set(io.clone());
             startup.persistence.lock().await.commit();
@@ -1608,7 +1610,11 @@ impl Session {
                     self.agent_status.send_replace(AgentStatus::Interrupted);
                 }
                 let previous_turn_settings = self
-                    .apply_rollout_reconstruction(&turn_context, &rollout_items)
+                    .apply_rollout_reconstruction(
+                        &turn_context,
+                        &rollout_items,
+                        /*restore_pending_mail*/ true,
+                    )
                     .await;
 
                 // If resuming, warn when the last recorded model differs from the current one.
@@ -1656,8 +1662,12 @@ impl Session {
             InitialHistory::Forked(mut rollout_items) => {
                 let turn_context = self.new_default_turn().await;
                 Self::assign_missing_rollout_response_item_ids(&mut rollout_items);
-                self.apply_rollout_reconstruction(&turn_context, &rollout_items)
-                    .await;
+                self.apply_rollout_reconstruction(
+                    &turn_context,
+                    &rollout_items,
+                    /*restore_pending_mail*/ false,
+                )
+                .await;
 
                 // Seed usage info from the recorded rollout so UIs can show token counts
                 // immediately on resume/fork.
@@ -1738,6 +1748,7 @@ impl Session {
         &self,
         turn_context: &Arc<TurnContext>,
         rollout_items: &[RolloutItem],
+        restore_pending_mail: bool,
     ) -> Option<PreviousTurnSettings> {
         let rollout_reconstruction::RolloutReconstruction {
             mut history,
@@ -1751,6 +1762,8 @@ impl Session {
             first_window_id,
             previous_window_id,
             window_id,
+            accepted_inter_agent_communication_ids,
+            pending_inter_agent_communications,
         } = self
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
@@ -1815,6 +1828,14 @@ impl Session {
                 },
             );
             state.set_previous_turn_settings(previous_turn_settings.clone());
+        }
+        if restore_pending_mail {
+            self.input_queue
+                .restore_durable_mailbox(
+                    accepted_inter_agent_communication_ids,
+                    pending_inter_agent_communications,
+                )
+                .await;
         }
         let prefix_tokens = if matches!(
             turn_context.config.model_auto_compact_token_limit_scope,
@@ -3900,6 +3921,20 @@ impl Session {
         for mut recording in pending {
             let _ = recording.changed().await;
         }
+        let mut rollout_items = vec![
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: communication.trigger_turn,
+            },
+            RolloutItem::ResponseItem(response_item.clone()),
+        ];
+        if communication.id.is_some() {
+            let mut presentation = communication;
+            presentation.trigger_turn = false;
+            rollout_items.push(RolloutItem::InterAgentCommunication(presentation));
+        }
+        if !self.persist_rollout_items(&rollout_items).await {
+            return;
+        }
         {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
@@ -3908,13 +3943,6 @@ impl Session {
                 model_info.truncation_policy.into(),
             );
         }
-        self.persist_rollout_items(&[
-            RolloutItem::InterAgentCommunicationMetadata {
-                trigger_turn: communication.trigger_turn,
-            },
-            RolloutItem::ResponseItem(response_item),
-        ])
-        .await;
         drop(boundary);
         self.send_raw_response_items(turn_context, items).await;
     }

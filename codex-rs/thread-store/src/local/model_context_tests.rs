@@ -3,6 +3,8 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::items::TurnItem;
@@ -12,6 +14,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
@@ -76,6 +79,63 @@ async fn stops_at_newest_usable_compaction_and_keeps_companions() {
         ])
         .expect("serialize expected context")
     );
+}
+
+#[tokio::test]
+async fn keeps_completion_delivery_state_older_than_compaction() {
+    let home = TempDir::new().expect("temp dir");
+    let uuid = Uuid::from_u128(/*v*/ 1009);
+    let thread_id = ThreadId::from_string(&uuid.to_string()).expect("thread id");
+    let mut receipt = InterAgentCommunication::new(
+        AgentPath::try_from("/root/worker").expect("agent path"),
+        AgentPath::root(),
+        Vec::new(),
+        "finished".to_string(),
+        /*trigger_turn*/ true,
+    );
+    receipt.id = Some(ResponseItemId::with_suffix(
+        "amsg_subagent_completion",
+        "turn-1",
+    ));
+    let presented_item = RolloutItem::ResponseItem(receipt.to_model_input_item().into());
+    let mut presentation = receipt.clone();
+    presentation.trigger_turn = false;
+    let _path = write_paginated_rollout(
+        home.path(),
+        "2025-01-03T13-00-08",
+        uuid,
+        [
+            RolloutItem::InterAgentCommunication(receipt.clone()),
+            presented_item,
+            RolloutItem::InterAgentCommunication(presentation.clone()),
+            compacted("latest compaction", Some(Vec::new())),
+            turn_context(home.path(), "after-compaction"),
+        ],
+    );
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+
+    let context = store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id,
+            include_archived: false,
+        })
+        .await
+        .expect("load model context");
+
+    let retained = context
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::InterAgentCommunication(communication) => Some(communication),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(retained, vec![&receipt, &presentation]);
+    assert!(!context.items.iter().any(|item| matches!(
+        item,
+        RolloutItem::ResponseItem(item)
+            if item.id().is_some_and(|id| id.as_str().starts_with("amsg_subagent_completion_"))
+    )));
 }
 
 #[tokio::test]

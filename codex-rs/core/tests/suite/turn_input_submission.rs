@@ -150,6 +150,7 @@ async fn turn_extension_data_is_captured_for_automatic_turns() -> anyhow::Result
                 /*trigger_turn*/ true,
             ),
             start_options: Default::default(),
+            reply: None,
         })
         .await?;
     let automatic_id = wait_for_event_match(&thread, |event| match event {
@@ -495,6 +496,7 @@ async fn host_drain_allows_mailbox_work_to_start_a_turn() -> anyhow::Result<()> 
                 /*trigger_turn*/ true,
             ),
             start_options: Default::default(),
+            reply: None,
         })
         .await?;
     wait_for_event(&test.codex, |event| {

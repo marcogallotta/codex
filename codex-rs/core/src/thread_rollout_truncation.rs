@@ -28,7 +28,7 @@ fn rollout_item_is_user_turn_boundary(item: &RolloutItem) -> bool {
             .iter()
             .flatten()
             .any(|item| is_user_turn_boundary(item)),
-        RolloutItem::InterAgentCommunication(_) => true,
+        RolloutItem::InterAgentCommunication(communication) => communication.id.is_none(),
         _ => false,
     }
 }
@@ -97,9 +97,11 @@ pub(crate) fn fork_turn_positions_in_rollout(items: &[RolloutItem]) -> Vec<usize
                 }
             }
             RolloutItem::InterAgentCommunication(communication) => {
-                rollback_turn_positions.push(idx);
-                if communication.trigger_turn {
-                    fork_turn_positions.push(idx);
+                if communication.id.is_none() {
+                    rollback_turn_positions.push(idx);
+                    if communication.trigger_turn {
+                        fork_turn_positions.push(idx);
+                    }
                 }
             }
             RolloutItem::InterAgentCommunicationMetadata { trigger_turn } => {

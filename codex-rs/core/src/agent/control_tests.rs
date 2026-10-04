@@ -793,6 +793,7 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
         Op::InterAgentCommunication {
             communication: communication.clone(),
             start_options: Default::default(),
+            reply: None,
         },
     );
     let captured = harness
@@ -1111,6 +1112,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
         Op::InterAgentCommunication {
             communication,
             start_options: Default::default(),
+            reply: None,
         },
     );
     let captured = harness
@@ -4369,35 +4371,38 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         &AgentStatus::Completed(Some("done".to_string())),
     )
     .expect("completed status should render");
-    let expected = (
-        worker_thread_id,
-        Op::InterAgentCommunication {
-            communication: InterAgentCommunication::new(
-                tester_path.clone(),
-                worker_path.clone(),
-                Vec::new(),
-                expected_message.clone(),
-                /*trigger_turn*/ false,
-            ),
-            start_options: Default::default(),
-        },
-    );
-
-    timeout(Duration::from_secs(5), async {
-        loop {
-            let captured = harness
-                .manager
-                .captured_ops()
-                .into_iter()
-                .find(|entry| captured_op_matches(entry, &expected));
-            if captured.is_some() {
-                break;
+    let communication =
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(communication) = harness.manager.captured_ops().into_iter().find_map(
+                    |(thread_id, op)| match op {
+                        Op::InterAgentCommunication { communication, .. }
+                            if thread_id == worker_thread_id
+                                && communication.author == tester_path
+                                && communication.recipient == worker_path
+                                && communication.content == expected_message =>
+                        {
+                            Some(communication)
+                        }
+                        _ => None,
+                    },
+                ) {
+                    break communication;
+                }
+                sleep(Duration::from_millis(10)).await;
             }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("completion watcher should queue a direct-parent message");
+        })
+        .await
+        .expect("completion watcher should queue a direct-parent message");
+    assert!(communication.trigger_turn);
+    let id = communication
+        .id
+        .as_ref()
+        .expect("wakeful completion should have a durable response item ID");
+    assert!(id.as_str().starts_with("amsg_subagent_completion_"));
+    let response_item = communication.to_model_input_item();
+    assert_eq!(response_item.id_prefix(), Some("amsg"));
+    assert_eq!(response_item.id(), Some(id));
 
     let root_history = root_thread.session.clone_history().await;
     assert!(!history_contains_assistant_inter_agent_communication(

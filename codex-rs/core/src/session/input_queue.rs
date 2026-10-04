@@ -5,6 +5,7 @@ use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
 use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -12,6 +13,7 @@ use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -96,6 +98,7 @@ pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     controller: Option<(ThreadId, Arc<dyn AgentControl>, watch::Receiver<bool>)>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+    accepted_mail_ids: Mutex<HashSet<ResponseItemId>>,
 }
 
 pub(crate) struct PendingMailboxCommunication {
@@ -111,6 +114,7 @@ impl InputQueue {
             activity_tx,
             controller: None,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            accepted_mail_ids: Mutex::new(HashSet::new()),
         }
     }
 
@@ -206,7 +210,13 @@ impl InputQueue {
         &self,
         communication: InterAgentCommunication,
         start_options: TurnStartOptions,
-    ) {
+    ) -> bool {
+        if let Some(id) = communication.id.as_ref() {
+            let mut accepted = self.accepted_mail_ids.lock().await;
+            if !accepted.insert(id.clone()) {
+                return false;
+            }
+        }
         let mut pending = self.mailbox_pending_mails.lock().await;
         // Mail retained while unloaded precedes new submissions to the loaded session.
         self.read_mailbox(&mut pending);
@@ -216,6 +226,32 @@ impl InputQueue {
             _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
         });
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        true
+    }
+
+    pub(crate) async fn has_accepted_mail_id(&self, id: &ResponseItemId) -> bool {
+        self.accepted_mail_ids.lock().await.contains(id)
+    }
+
+    pub(crate) async fn restore_durable_mailbox(
+        &self,
+        accepted_ids: HashSet<ResponseItemId>,
+        pending: Vec<InterAgentCommunication>,
+    ) {
+        self.accepted_mail_ids.lock().await.extend(accepted_ids);
+        let mut queue = self.mailbox_pending_mails.lock().await;
+        queue.extend(
+            pending
+                .into_iter()
+                .map(|communication| PendingMailboxCommunication {
+                    communication,
+                    start_options: TurnStartOptions::default(),
+                    _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+                }),
+        );
+        if !queue.is_empty() {
+            self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        }
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
@@ -595,6 +631,36 @@ mod tests {
         assert_eq!(
             *activity_rx.borrow_and_update(),
             InputQueueActivity::Mailbox
+        );
+    }
+
+    #[tokio::test]
+    async fn input_queue_deduplicates_durable_mail_ids() {
+        let input_queue = InputQueue::new();
+        let mut mail = make_mail(
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            AgentPath::root(),
+            "done",
+            /*trigger_turn*/ true,
+        );
+        mail.id = Some(ResponseItemId::with_suffix(
+            "amsg_subagent_completion",
+            "turn-1",
+        ));
+
+        assert!(
+            input_queue
+                .enqueue_mailbox_communication(mail.clone(), Default::default())
+                .await
+        );
+        assert!(
+            !input_queue
+                .enqueue_mailbox_communication(mail.clone(), Default::default())
+                .await
+        );
+        assert_eq!(
+            input_queue.drain_mailbox_input_items().await.0,
+            vec![TurnInput::InterAgentCommunication(mail)]
         );
     }
 

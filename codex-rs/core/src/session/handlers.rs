@@ -24,7 +24,9 @@ use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
+use codex_history::RolloutItem;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -82,16 +84,34 @@ pub async fn inter_agent_communication(
     sub_id: String,
     communication: InterAgentCommunication,
     start_options: codex_protocol::turn_input::TurnStartOptions,
-) {
+) -> CodexResult<()> {
+    if let Some(id) = communication.id.as_ref() {
+        if sess.input_queue.has_accepted_mail_id(id).await {
+            return Ok(());
+        }
+        if !sess
+            .persist_rollout_items(&[RolloutItem::InterAgentCommunication(communication.clone())])
+            .await
+        {
+            return Err(CodexErr::Fatal(
+                "failed to persist inter-agent delivery receipt".to_string(),
+            ));
+        }
+    }
     let trigger_turn = communication.trigger_turn;
-    sess.input_queue
+    let accepted = sess
+        .input_queue
         .enqueue_mailbox_communication(communication, start_options)
         .await;
+    if !accepted {
+        return Ok(());
+    }
     crate::agent_communication::emit_agent_communication_receive(&sub_id);
     if trigger_turn || sess.has_outstanding_durable_sleep() {
         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
             .await;
     }
+    Ok(())
 }
 
 pub async fn run_user_shell_command(
@@ -610,9 +630,18 @@ pub(super) async fn submission_loop(
                 Op::InterAgentCommunication {
                     communication,
                     start_options,
+                    reply,
                 } => {
-                    inter_agent_communication(&sess, sub.id.clone(), communication, start_options)
-                        .await;
+                    let result = inter_agent_communication(
+                        &sess,
+                        sub.id.clone(),
+                        communication,
+                        start_options,
+                    )
+                    .await;
+                    if let Some(reply) = reply {
+                        let _ = reply.send(result);
+                    }
                     false
                 }
                 Op::ExecApproval {

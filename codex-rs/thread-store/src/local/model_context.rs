@@ -179,7 +179,9 @@ fn scan_model_context_from_lineage_blocking(
     session_meta: SessionMetaLine,
 ) -> io::Result<Vec<RolloutItem>> {
     let mut scan = ModelContextScan::default();
-    'segments: for segment in lineage.segments().iter().rev() {
+    let mut sparse_older_delivery_state = Vec::new();
+    let mut context_complete = false;
+    for segment in lineage.segments().iter().rev() {
         let file = codex_rollout::open_rollout_seekable_reader(segment.rollout_path.as_path())?;
         let mut scanner = match segment.end.map(|end| end.end_byte_offset) {
             Some(end_byte_offset) => ReverseJsonlScanner::new_at(file, end_byte_offset)?,
@@ -194,14 +196,33 @@ fn scan_model_context_from_lineage_blocking(
             if matches!(&line.item, RolloutItem::SessionMeta(_)) {
                 break;
             }
+            if context_complete {
+                if is_sparse_delivery_state(&line.item) {
+                    sparse_older_delivery_state.push(line.item);
+                }
+                continue;
+            }
             match scan.push(line.item) {
                 ModelContextScanProgress::Continue => {}
-                ModelContextScanProgress::Complete => break 'segments,
+                ModelContextScanProgress::Complete => context_complete = true,
             }
         }
     }
 
     let mut items = scan.finish();
+    sparse_older_delivery_state.reverse();
+    sparse_older_delivery_state.append(&mut items);
+    let mut items = sparse_older_delivery_state;
     items.insert(0, RolloutItem::SessionMeta(session_meta));
     Ok(items)
+}
+
+fn is_sparse_delivery_state(item: &RolloutItem) -> bool {
+    match item {
+        RolloutItem::InterAgentCommunication(communication) => communication
+            .id
+            .as_ref()
+            .is_some_and(|id| id.as_str().starts_with("amsg_subagent_completion_")),
+        _ => false,
+    }
 }
