@@ -24,8 +24,9 @@ jobs:
         working-directory: .
         shell: bash
         run: |
-          test "$(git rev-parse HEAD^)" = "d0f42af23913a04440e4b3b03b9fbc3c539a2bf4"
-          test -z "$(git diff --name-only HEAD^ HEAD -- . \
+          candidate=d0f42af23913a04440e4b3b03b9fbc3c539a2bf4
+          git merge-base --is-ancestor "$candidate" HEAD
+          test -z "$(git diff --name-only "$candidate" HEAD -- . \
             ':(exclude).github/workflows/wakeful-linux-qualification.yml')"
       - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -67,8 +68,9 @@ jobs:
         working-directory: .
         shell: bash
         run: |
-          test "$(git rev-parse HEAD^)" = "d0f42af23913a04440e4b3b03b9fbc3c539a2bf4"
-          test -z "$(git diff --name-only HEAD^ HEAD -- . \
+          candidate=d0f42af23913a04440e4b3b03b9fbc3c539a2bf4
+          git merge-base --is-ancestor "$candidate" HEAD
+          test -z "$(git diff --name-only "$candidate" HEAD -- . \
             ':(exclude).github/workflows/wakeful-linux-qualification.yml')"
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
