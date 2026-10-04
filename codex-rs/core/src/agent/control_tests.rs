@@ -6,6 +6,7 @@ use crate::agent::agent_status_from_event;
 use crate::agent::api::AgentControl;
 use crate::agent::api::AgentInfo;
 use crate::agent::api::AgentInput;
+use crate::agent::api::AgentTurnOutcome;
 use crate::agent::api::SpawnRequest;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::types::AgentMessage;
@@ -4321,47 +4322,30 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
     let harness = AgentControlHarness::new().await;
     let (_root_thread_id, root_thread) = harness.start_thread().await;
     let (worker_thread_id, _worker_thread) = harness.start_thread().await;
-    let mut tester_config = harness.config.clone();
-    let _ = tester_config.features.enable(Feature::MultiAgentV2);
-    let tester_thread_id = harness
-        .manager
-        .start_thread(StartThreadOptions::new(tester_config.clone()))
-        .await
-        .expect("tester thread should start")
-        .thread_id;
-    let tester_thread = harness
-        .manager
-        .get_thread(tester_thread_id)
-        .await
-        .expect("tester thread should exist");
+    let tester_thread_id = ThreadId::new();
     let worker_path = AgentPath::root().join("worker_a").expect("worker path");
     let tester_path = worker_path.join("tester").expect("tester path");
-    harness.control.maybe_start_completion_watcher(
-        tester_thread_id,
-        Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: worker_thread_id,
-            depth: 2,
-            agent_path: Some(tester_path.clone()),
-            agent_nickname: None,
-            agent_role: Some("explorer".to_string()),
-        })),
-        tester_path.to_string(),
-        Some(tester_path.clone()),
-    );
-    let tester_turn = tester_thread.session.new_default_turn().await;
-    tester_thread
-        .session
-        .send_event(
-            tester_turn.as_ref(),
-            EventMsg::TurnComplete(TurnCompleteEvent {
-                turn_id: tester_turn.sub_id.clone(),
-                started_at: None,
-                last_agent_message: Some("done".to_string()),
-                error: None,
-                completed_at: None,
-                duration_ms: None,
-                time_to_first_token_ms: None,
-            }),
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: worker_thread_id,
+        depth: 2,
+        agent_path: Some(tester_path.clone()),
+        agent_nickname: None,
+        agent_role: Some("explorer".to_string()),
+    });
+    let tester_turn_id = "tester-turn".to_string();
+    harness
+        .control
+        .notify_parent_of_terminal_turn(
+            AgentTurnOutcome {
+                thread_id: tester_thread_id,
+                turn_id: tester_turn_id,
+                source,
+                parent_turn_id: None,
+                initiating_agent_path: None,
+                status: AgentStatus::Completed(Some("done".to_string())),
+                error_info: None,
+            },
+            &codex_rollout_trace::ThreadTraceContext::disabled(),
         )
         .await;
 
