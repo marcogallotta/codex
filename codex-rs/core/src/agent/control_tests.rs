@@ -4380,7 +4380,10 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
                             if thread_id == worker_thread_id
                                 && communication.author == tester_path
                                 && communication.recipient == worker_path
-                                && communication.content == expected_message =>
+                                && communication.content == expected_message
+                                && communication.id.as_ref().is_some_and(|id| {
+                                    id.as_str().starts_with("amsg_subagent_completion_")
+                                }) =>
                         {
                             Some(communication)
                         }
