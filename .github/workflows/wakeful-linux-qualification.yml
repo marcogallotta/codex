@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  qualify:
+  targeted-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -51,3 +51,137 @@ jobs:
             agent::control::tests::multi_agent_v2_completion_queues_message_for_direct_parent -- --exact
           cargo test --locked -p codex-thread-store --lib \
             local::model_context::tests::keeps_completion_delivery_state_older_than_compaction -- --exact
+
+  canonical-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Verify qualification subject
+        working-directory: .
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD^)" = "d0f42af23913a04440e4b3b03b9fbc3c539a2bf4"
+          test -z "$(git diff --name-only HEAD^ HEAD -- . \
+            ':(exclude).github/workflows/wakeful-linux-qualification.yml')"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install Linux package dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils \
+            pkg-config \
+            libcap-dev
+      - name: Use hermetic Cargo home
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_home="${GITHUB_WORKSPACE}/.cargo-home"
+          mkdir -p "${cargo_home}/bin"
+          echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
+          echo "${cargo_home}/bin" >> "$GITHUB_PATH"
+          : > "${cargo_home}/config.toml"
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Install musl build tools
+        env:
+          TARGET: x86_64-unknown-linux-musl
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+      - name: Disable aws-lc jitter entropy
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY_x86_64_unknown_linux_musl=1" >> "$GITHUB_ENV"
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-musl
+      - name: Build bwrap and export digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=x86_64-unknown-linux-musl
+          cargo build --locked --target "$target" --release --bin bwrap
+          bwrap_path="target/${target}/release/bwrap"
+          strip --strip-debug --strip-unneeded "$bwrap_path"
+          digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
+          echo "WAKEFUL_BWRAP_PATH=${GITHUB_WORKSPACE}/codex-rs/${bwrap_path}" >> "$GITHUB_ENV"
+          echo "Built package bwrap sha256:${digest}"
+      - name: Build canonical Wakeful package
+        timeout-minutes: 58
+        env:
+          CODEX_REPO_ROOT: ${{ github.workspace }}
+          STABLE_GIT_COMMIT: d0f42af23913a04440e4b3b03b9fbc3c539a2bf4
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="${RUNNER_TEMP}/wakeful-codex-d0f42af2-x86_64-unknown-linux-musl"
+          archive="${RUNNER_TEMP}/wakeful-codex-d0f42af2-x86_64-unknown-linux-musl.tar.gz"
+          python3 "${GITHUB_WORKSPACE}/scripts/build_codex_package.py" \
+            --target x86_64-unknown-linux-musl \
+            --cargo-profile release \
+            --package-version 0.0.0-wakeful.d0f42af2 \
+            --package-dir "$package_dir" \
+            --archive-output "$archive" \
+            --bwrap-bin "$WAKEFUL_BWRAP_PATH"
+          echo "WAKEFUL_PACKAGE_DIR=${package_dir}" >> "$GITHUB_ENV"
+          echo "WAKEFUL_PACKAGE_ARCHIVE=${archive}" >> "$GITHUB_ENV"
+      - name: Verify canonical package and write manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$WAKEFUL_PACKAGE_DIR/codex-package.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          metadata = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          expected = {
+              "layoutVersion": 1,
+              "version": "0.0.0-wakeful.d0f42af2",
+              "target": "x86_64-unknown-linux-musl",
+              "variant": "codex",
+              "entrypoint": "bin/codex",
+              "resourcesDir": "codex-resources",
+              "pathDir": "codex-path",
+          }
+          if metadata != expected:
+              raise SystemExit(f"package metadata mismatch: {metadata!r}")
+          PY
+          file "$WAKEFUL_PACKAGE_DIR/bin/codex"
+          "$WAKEFUL_PACKAGE_DIR/bin/codex" --version
+          tar -tzf "$WAKEFUL_PACKAGE_ARCHIVE"
+          (
+            cd "$WAKEFUL_PACKAGE_DIR"
+            find . -type f -print0 | sort -z | xargs -0 sha256sum
+          ) > "${RUNNER_TEMP}/wakeful-package-files.sha256"
+          sha256sum "$WAKEFUL_PACKAGE_ARCHIVE" \
+            > "${RUNNER_TEMP}/wakeful-package-archive.sha256"
+          cat "${RUNNER_TEMP}/wakeful-package-files.sha256"
+          cat "${RUNNER_TEMP}/wakeful-package-archive.sha256"
+      - name: Upload canonical package evidence
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: wakeful-codex-package-d0f42af2
+          path: |
+            ${{ env.WAKEFUL_PACKAGE_DIR }}
+            ${{ env.WAKEFUL_PACKAGE_ARCHIVE }}
+            ${{ runner.temp }}/wakeful-package-files.sha256
+            ${{ runner.temp }}/wakeful-package-archive.sha256
+          if-no-files-found: error
+          retention-days: 3
